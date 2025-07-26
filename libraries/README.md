@@ -14,8 +14,10 @@ https://learn.adafruit.com/adafruit-feather-m0-radio-with-lora-radio-module/usin
 
 Using Arduino's library manager, you'll need to install a few additional libraries
 
-- RadioHead (a library)
+- RadioHead by Mike McCauley
 - Encoder by Paul Stroffregen
 - elapsedMillis by Paul Stroffregen
 - RadioHead by Mike Mccauley
 - Scheduler by Arduino
+- Adafruit Sleepydog Library by Adafruit
+- GPIO_NXP_Arduino by Tedd OKANO
