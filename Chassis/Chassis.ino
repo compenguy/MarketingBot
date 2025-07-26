@@ -19,6 +19,8 @@
 #define RFM95_RST   4
 RH_RF95 rf95(RFM95_CS, RFM95_INT);
 
+#define WATCHDOG_TIMEOUT 400
+
 union ChassisControlData{
   ChassisControl data;
   uint8_t buffer[CHASSIS_CONTROL_SIZE_BYTES];
@@ -74,42 +76,96 @@ void setup() {
 
   //Informative tasks for debugging
   // Scheduler.startLoop(print_status);
-  // Scheduler.startLoop(printControl);
-  Scheduler.startLoop(printTelemetry);
+  Scheduler.startLoop(printControl);
+  // Scheduler.startLoop(printTelemetry);
 }
 
-bool isEnabled=false;
 String enableText="EN-> Never enabled"; //big long string to preset the buffer
-void loop() {
-  bool enableAllowed=true; //Assume we're good to go
 
-  //Check unsafe conditions
-  if(isEnabled && watchdog>400){
-    enableText="EN -> Timed out";
-    enableAllowed=false;
+enum State{
+  STARTUP,
+  NORADIO,
+  REQUESTDISABLED,
+  LOWBATTERY,
+  WATCHDOGERROR,
+  ENABLED
+};
+
+enum State state = STARTUP;
+
+void run_saftey_state_machine(){
+  // Emergency saftey Checks
+  if (bot::batteryVoltage()<9){
+    enableText = "Saftey Check Error: Battery Low -> LOWBATTERY";
+    state = LOWBATTERY;
   }
-  else if(isEnabled && bot::batteryVoltage()<9){
-    enableText="EN -> Low Battery";
-    enableAllowed=false;
+
+
+  // Run the saftey state machine
+  switch(state){
+    case STARTUP:
+      enableText = "STARTUP -> NORADIO";
+      state = NORADIO;
+      break;
+
+    case NORADIO:
+      if (watchdog < WATCHDOG_TIMEOUT){
+        enableText = "NORADIO -> REQUESTDISABLED";
+        state = REQUESTDISABLED;
+        chassisControlData.data.enable=false;
+      }
+      else{
+        enableText = "NORADIO";
+      }
+      break;
+
+    case REQUESTDISABLED:
+      if (chassisControlData.data.enable==true){
+        enableText = "REQUESTDISABLED -> ENABLED";
+        state = ENABLED;
+        bot::enable();
+      }
+      else{
+        enableText = "REQUESTDISABLED";
+      }
+      break;
+
+    case LOWBATTERY:
+      enableText = "LOWBATTERY";
+      break;
+
+    case WATCHDOGERROR:
+      enableText = "WATCHDOGERROR -> REQUESTDISABLED";
+      state = REQUESTDISABLED;
+      chassisControlData.data.enable=false;
+      break;
+
+    case ENABLED:
+      enableText = "ENABLED";
+      if (chassisControlData.data.enable==false){
+        enableText = "ENABLED -> REQUESTDISABLED";
+        state = REQUESTDISABLED;
+      }
+
+      if (watchdog > WATCHDOG_TIMEOUT){
+        enableText = "ENABLED -> WATCHDOGERROR";
+        state = WATCHDOGERROR;
+      }
+
+      break;
   }
-  else if(isEnabled && chassisControlData.data.enable==false){
-    enableText="EN -> Remote disable";
-    enableAllowed=false;
-  }
-  else if(!isEnabled && enableAllowed && chassisControlData.data.enable){
-    //All good! Clear our text
-    bot::enable();
-    enableText="";
-  }
-  //We can keep enable if both are allowed
-  isEnabled = chassisControlData.data.enable && enableAllowed;
+}
+
+
+void loop() {
+  run_saftey_state_machine();
 
   //Write the robot state to telemetry
   chassisTelemetryData.data.metadata.type = PacketType::CHASSIS_TELEMETRY;
 
   chassisTelemetryData.data.batteryVoltage = bot::batteryVoltage()*10; // TODO: Battery sensing not currently implimented
   chassisTelemetryData.data.gear = ChassisGear::Low; // TODO: Shifter solenoid not operational in hardware
-  chassisTelemetryData.data.enable = isEnabled;
+  chassisTelemetryData.data.enable = (state == ENABLED);
   chassisTelemetryData.data.pressure = bot::currentPressure(); //TODO: Hardware detection not installed
   chassisTelemetryData.data.speed = bot::currentSpeed();
 
@@ -118,7 +174,7 @@ void loop() {
 
 
   //If we're disabled, stop actuators and exit loop
-  if(isEnabled){
+  if(state == ENABLED){
     //Pass provided Control data to the hardware
     // int speed = constrain(millis()/10,1500,2000);
     // bot::tankDriveRaw(speed,speed);
@@ -132,7 +188,7 @@ void loop() {
     bot::disable();
   }
 
-  digitalWrite(LED_BUILTIN,isEnabled?255:0);
+  digitalWrite(LED_BUILTIN,(state == ENABLED)?255:0);
 
   //wait til next loop
   delay(5);
@@ -153,7 +209,7 @@ void send_telemetry(){
 
   // prevent timing hiccups with switching radio tx/rx modes
   // when robot is operating until better solution located
-  delay(isEnabled? 2000 : 200);
+  delay(state == ENABLED? 2000 : 200);
 }
 
 
