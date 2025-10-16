@@ -13,6 +13,12 @@
 namespace Buttons{
   /** Track time since last meaningful action*/
   elapsedMillis _idleTimer;
+  //TODO: This needs a better state model for tracking
+  // We likely need to set up a bit struct to represent the controller, 
+  // and then have a "current" and "last" state, which can more easily
+  // be compared to track when a change occours.
+  // Currently  implimented as copy-pasted functional blocks since we only need 3 buttons,
+  // but future buttons need a real solution
 
   PCAL6416A exright; 
   PCAL6416A exleft; 
@@ -47,8 +53,10 @@ namespace Buttons{
   Encoder rollerWheel(Pins::WheelEncoder.a,Pins::WheelEncoder.b);
 
   void init(){
+    Serial.println("init buttons");
     
-    //Set up the right side for primary buttons
+    //Setup the aux chips on the controller that handles
+    //Button presses
     exleft.begin();
     exright.begin(0x21);
 
@@ -88,6 +96,7 @@ namespace Buttons{
     exleft.pinModePCAL(PCAL6416A_B6, INPUT_PULLUP);
     exleft.pinModePCAL(PCAL6416A_B7, INPUT_PULLUP);
 
+    //Set up locally handled buttons and inputs
     pinMode(Pins::home,INPUT_PULLUP);
   }
 
@@ -135,14 +144,29 @@ namespace Buttons{
 
 
   bool a(){
-    return !exright.digitalReadPCAL(PCAL6416A_B7);
+    static bool last_button = false;
+    bool button = !exright.digitalReadPCAL(PCAL6416A_B7);
+    if(last_button != button){
+      _idleTimer = 0;
+      last_button = button;
+    }
+    return button;
   }
+
   bool b(){
     return !exright.digitalReadPCAL(PCAL6416A_B2);
   }
+
   bool x(){
-    return !exright.digitalReadPCAL(PCAL6416A_B5);
+    static bool last_button = false;
+    bool button = !exright.digitalReadPCAL(PCAL6416A_B5);
+    if(last_button != button){
+      _idleTimer = 0;
+      last_button = button;
+    }
+    return button;
   }
+
   bool y(){
     return !exright.digitalReadPCAL(PCAL6416A_B3);
   }
@@ -218,7 +242,7 @@ namespace Buttons{
 
 
 
-  /** Print a basic line of controller status info*/
+  /** Print a basic line of controller status info. Can be used directly as a Scheduler task*/
   void printDebug(){
     Serial.println();
     Serial.printf(

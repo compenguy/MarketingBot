@@ -6,10 +6,9 @@
 #include <RH_RF95.h>
 #include <Scheduler.h>
 #include <Adafruit_SleepyDog.h>
+#include "Radio.h"
 
 #include "Buttons.h"
-// #include "Pins.h"
-// #include "Bot.h"
 #include "Chassis.h"
 
 
@@ -18,35 +17,19 @@
 #define Serial SERIAL_PORT_USBVIRTUAL
 #endif
 
-#define RF95_FREQ 915.0
-#define RFM95_CS 8
-#define RFM95_INT 3
-#define RFM95_RST 4
-RH_RF95 rf95(RFM95_CS, RFM95_INT);
+CannonControl cannonControl;
+ChassisControl chassisControl;
 
-union ChassisControlData {
-  ChassisControl data;
-  uint8_t buffer[CHASSIS_CONTROL_SIZE_BYTES];
-} chassisControlData;
-
-union ChassisTelemetryData {
-  ChassisTelemetry data;
-  uint8_t buffer[CHASSIS_TELEMETRY_SIZE_BYTES];
-} chassisTelemetryData;
-
-union RadioBuffer{
-  ChassisControl chassisControl;
-  ChassisTelemetry chassisTelemetry;
-  uint8_t buffer[128]; //Set to max size bitsize of the radio to avoid potential overflow
-} radioBuffer;
+ChassisTelemetry chassisTelemetry;
+CannonTelemetry cannonTelemetry;
 
 struct SleepTime {
-  int chassisControl;
-  int chassisTelemetry;
+  int enabled;
+  int disabled;
 };
-SleepTime sleepTime = { 100, 100 };
-SleepTime sleepTimeIdle = { .chassisControl = 200, .chassisTelemetry = 20 };
-SleepTime sleepTimeEnable = { .chassisControl = 30, .chassisTelemetry = 100 };
+SleepTime sleepChassisControl = { .enabled = 20, .disabled = 100 };
+SleepTime sleepCannonControl = { .enabled = 20, .disabled = 100 };
+SleepTime sleepTelemetry = {.enabled = 200, .disabled = 20 };
 
 void setup() {
   // put your setup code here, to run once:
@@ -58,67 +41,59 @@ void setup() {
   Serial.println("==New Boot==");
   Serial.println("============");
 
-  //Do radio bringup
-  pinMode(RFM95_RST, OUTPUT);
-  digitalWrite(RFM95_RST, LOW);
-  delay(100);
-  digitalWrite(RFM95_RST, HIGH);
-  delay(100);
 
-  if (!rf95.init()) {
-    Serial.println("init failed");
-  } else {
-    Serial.println("Radio online...");
-  }
-
-  rf95.setModemConfig(RH_RF95::Bw500Cr45Sf128);  // 500hz data rate; Default is 128
-  rf95.setFrequency(915.0);
-  rf95.setTxPower(23, false);
-
-  //Let the button initialization do it's thing
+  //Do our init steps
+  Radio::initialize();
   Buttons::init();
 
   // Core operating tasks
-  Scheduler.startLoop(send_control);
-  Scheduler.startLoop(recieve_telemetry);
+  // Outside of debugging leave disabled; Radio switching unfortunately causes surprising 
+  // jitter on send times. Need additional radio on hardware side
+  // Scheduler.startLoop(recieveTelemetry);
+
   Scheduler.startLoop(updateControls);
 
+  Scheduler.startLoop(sendChassisControl);
+  Scheduler.startLoop(sendCannonControl);
+
   //Show useful info
-  Scheduler.startLoop(printChassisControl);
-  Scheduler.startLoop(printChassisTelemetry);
+  // Scheduler.startLoop(printChassisControl);
+  // Scheduler.startLoop(printChassisTelemetry);
 
   //Helpful for debugging hardware
   // Scheduler.startLoop(Buttons::printDebug);
   // Scheduler.startLoop(print_status);
-  // Scheduler.startLoop(debugRadioBuffer);
+  // Scheduler.startLoop(print);
 
   // Scheduler.startLoop(debugControlPackets);
-
-  // Scheduler.startLoop(a);
-  // Scheduler.startLoop(b);
-
 }
 
 //For temp code and the like
 void loop() {
-  delay(1000);
+  delay(2000);
 }
 
 /** Monitor hardware + do the things. */
 void updateControls(){
-  if(Buttons::home2() >1500 && chassisControlData.data.enable==false){
-    chassisControlData.data.enable=true;
+  //Hold the Home button to enable the bot
+  if( Buttons::home2()>1500 && chassisControl.enable==false ){
+    chassisControl.enable=true;
+    cannonControl.enable = true;
   }
-  else if(Buttons::home2() >1500 && chassisControlData.data.enable==true){
+  else if( Buttons::home2()>1500 && chassisControl.enable==true ){
     //wait to release button
   }
-  else if(Buttons::home2() && chassisControlData.data.enable==true){
-    chassisControlData.data.enable=false;
+  //Tap to turn off again
+  else if( Buttons::home2() && chassisControl.enable==true ){
+    chassisControl.enable=false;
+    cannonControl.enable =false;
   }
-  //handle forgotten controller
-  if(Buttons::idleTimer() > 30*1000){
+  //Disable if controller is not touched for a while
+  //TODO: Not all buttons properly reset the idle timer
+  if( Buttons::idleTimer() > 30*1000 ){
     //Handle a controller being forgotten
-    chassisControlData.data.enable = false;
+    chassisControl.enable = false;
+    cannonControl.enable = false;
   }
 
   //Auto power off the controller
@@ -137,133 +112,114 @@ void updateControls(){
   //   Serial.printf("...yawn %s\n",sleepms);
   // }
 
-
-
   //CANNOT USE: Some idiot mentor wired this pin to the wheel encoder, so there's a pin conflict
   // analogWrite(LED_BUILTIN, enable ? 255:0);
-
 
   Buttons::JoystickReadings stick = Buttons::LeftStick();
   stick.x*=-1; //Convert x to the right to CCW notation for arcade drive
   stick.y*=-1; //Covert y from HID standard of negative-is-away to positive robot forward
-  chassisControlData.data.speed = Chassis::arcadeDrive( stick.y, stick.x*.25 );
+  chassisControl.speed = Chassis::arcadeDrive( stick.y, stick.x*.25 );
+
+
+  //Update the Cannon Module, which is mostly trivial state machine triggers
+  cannonControl.angle = Buttons::rollerWheel.read();
+  cannonControl.fire = Buttons::a();
+  cannonControl.load = Buttons::x();
+
 
   delay(10);
 }
 
 
-
-
-elapsedMillis cctimer;
-void send_control() {
-  //Observe the need of RX mode to reserve the radio;
-  //In such cases, just hang out until it passes control back
-  while (rf95.mode() == RHGenericDriver::RHModeRx) delay(1);
-  
-  chassisControlData.data.metadata.type = PacketType::CHASSIS_CONTROL;
-  chassisControlData.data.metadata.heartbeat+=1;
-
-  bool sent = false;
-  sent = rf95.send(chassisControlData.buffer, CHASSIS_CONTROL_SIZE_BYTES);
-  bool done = rf95.waitPacketSent(200);
-  // Serial.println();
-  // Serial.print("#");
-  // Serial.print(sent ? ">>" : "--");
-  // Serial.print(done ? "++" : "--");
-  cctimer = 0;
-
-  delay(sleepTime.chassisControl);
-}
-
-
-elapsedMillis cttimer;
-void recieve_telemetry() {
-  //Set by radio when recieving a buffer
-  //Note, this can be initailized to anything *but* zero; Which represents a closed socket. 
-  uint8_t radioBufferLength=CHASSIS_TELEMETRY_SIZE_BYTES;
-  
-  if (rf95.waitAvailableTimeout(sleepTime.chassisTelemetry)) {
-    if (rf95.recv(radioBuffer.buffer, &radioBufferLength)) {
-      if (
-        radioBufferLength == CHASSIS_TELEMETRY_SIZE_BYTES && 
-        radioBuffer.chassisTelemetry.metadata.type == PacketType::CHASSIS_TELEMETRY
-      ) {
-        //valid data; Handle it appropriately
-        chassisTelemetryData.data = radioBuffer.chassisTelemetry;
-        cttimer = 0;
-      }
-    }
-  } else {
-    // Serial.print(".");
-  }
-  rf95.setModeIdle();
-
-  delay(sleepTime.chassisTelemetry);
-}
-
-void print_status() {
+void printControllerStatus() {
   Serial.println();
   Serial.print("<3 ");
-  Serial.print(rf95.lastRssi());
+  Serial.print(Radio::rf95.lastRssi());
 
   delay(2000);
 }
 
 
+elapsedMillis chassisConnectionTimer;
+void sendChassisControl() {
+  bool ok = Radio::sendChassisControl(chassisControl);
+  if( ok ){ chassisConnectionTimer=0; };
+  delay(chassisControl.enable? sleepChassisControl.enabled : sleepChassisControl.disabled);
+}
+
+elapsedMillis cannonConnectionTimer;
+void sendCannonControl(){
+  bool ok = Radio::sendCannonControl(cannonControl);
+  if( ok ){ cannonConnectionTimer=0; };
+  delay(cannonControl.enable? sleepCannonControl.enabled : sleepCannonControl.disabled);
+}
+
+
+/// Handle Poll the system for telemetry information
+void recieveTelemetry(){
+  Radio::updateBuffer();
+  chassisTelemetry = Radio::getChassisTelemetry();
+  cannonTelemetry = Radio::getCannonTelemetry();
+  delay(chassisControl.enable ? sleepTelemetry.enabled : sleepTelemetry.disabled);
+}
+
+
 void printChassisControl(){
+  
   Serial.println();
 
   Serial.print("> Chassis ");
 
   Serial.printf(
-    "%s",chassisControlData.data.enable?"EN":".."
+    "%s",chassisControl.enable?"EN":".."
   );
 
   Serial.printf(
     "[L%4i R%4i]",
-    chassisControlData.data.speed.left,
-    chassisControlData.data.speed.right
+    chassisControl.speed.left,
+    chassisControl.speed.right
   );
 
   Serial.printf(
     "[%s]",
-    chassisControlData.data.gear==ChassisGear::High?"HG":"LG"
+    chassisControl.gear==ChassisGear::High?"HG":"LG"
   );
   Serial.printf(
     "[<3 %i]",
-    chassisControlData.data.metadata.heartbeat
+    chassisControl.metadata.heartbeat
   );
 
   delay(200);
 }
 
 void printChassisTelemetry(){
+  ChassisTelemetry chassisTelemetry = Radio::getChassisTelemetry();
   Serial.println();
 
   Serial.print(" <Chassis ");
 
   Serial.printf(
-    "%2s ",chassisTelemetryData.data.enable?"EN":"--."
+    "%2s ",chassisTelemetry.enable?"EN":"--."
   );
 
   Serial.printf(
     "[L%4i R%4i] ",
-    chassisTelemetryData.data.speed.left,
-    chassisTelemetryData.data.speed.right
+    chassisTelemetry.speed.left,
+    chassisTelemetry.speed.right
   );
 
   Serial.printf(
     "[%s] ",
-    chassisTelemetryData.data.gear==ChassisGear::High?"HG":"LG"
+    chassisTelemetry.gear==ChassisGear::High?"HG":"LG"
   );
 
   Serial.printf(
     "[%2i psi] ",
-    chassisTelemetryData.data.pressure
+    chassisTelemetry.pressure
   );
   Serial.printf(
     "[%2.1fv]",
-    chassisTelemetryData.data.batteryVoltage/10.0
+    chassisTelemetry.batteryVoltage/10.0
   );
 
   delay(200);
@@ -273,49 +229,27 @@ void printChassisTelemetry(){
 * May be necessary to troubleshoot communication related issues
 */
 void debugControlPackets(){
-  Serial.print("D ");
+  // Serial.print("D ");
 
-  Serial.printf("<%2i>",chassisControlData.data.metadata.heartbeat);
+  // Serial.printf("<%2i>",chassisControl.metadata.heartbeat);
 
-  Serial.printf(" %2s ",chassisControlData.data.enable?"EN":"--");
+  // Serial.printf(" %2s ",chassisControl.enable?"EN":"--");
 
-  //Print a bitfield of the data as it would be sent
-  //Useful to troubleshoot length and offset issues
-  Serial.print(" ");
-  for(int i = 0; i < sizeof(chassisControlData); i++){
-    for(int j = 0; j < 8; j++){
-      Serial.print((chassisControlData.buffer[i]>>(7-j)) &1);
-    }
-    Serial.print(".");
-  }
+  // //Print a bitfield of the data as it would be sent
+  // //Useful to troubleshoot length and offset issues
+  // Serial.print(" ");
+  // for(int i = 0; i < sizeof(chassisControlData); i++){
+  //   for(int j = 0; j < 8; j++){
+  //     Serial.print((chassisControlData.buffer[i]>>(7-j)) &1);
+  //   }
+  //   Serial.print(".");
+  // }
 
 
-  Serial.println();
+  // Serial.println();
   delay(200);
 }
 
-void debugRadioBuffer(){
-  Serial.print("D ");
-
-  Serial.printf("<%2i>",radioBuffer.chassisTelemetry.metadata.heartbeat);
-
-  Serial.printf(" %2s ",radioBuffer.chassisTelemetry.enable?"EN":"--");
-
-  //Print a bitfield of the data as it would be sent
-  //Useful to troubleshoot length and offset issues
-  Serial.print(" ");
-  int size=CHASSIS_TELEMETRY_SIZE_BYTES+5;
-  // size=sizeof(radioBuffer.buffer);
-  size=sizeof(12);
-  for(int i = 0; i < size; i++){
-    for(int j = 0; j < 8; j++){
-      Serial.print((radioBuffer.buffer[i]>>(7-j)) &1);
-    }
-    Serial.print(".");
-  }
 
 
-  Serial.println();
-  delay(200);
-}
 

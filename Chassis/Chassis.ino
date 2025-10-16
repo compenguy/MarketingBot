@@ -82,7 +82,7 @@ void setup() {
 
 String enableText="EN-> Never enabled"; //big long string to preset the buffer
 
-enum State{
+enum class SafetyStates{
   STARTUP,
   NORADIO,
   REQUESTDISABLED,
@@ -91,27 +91,26 @@ enum State{
   ENABLED
 };
 
-enum State state = STARTUP;
+SafetyStates state = SafetyStates::STARTUP;
 
 void run_saftey_state_machine(){
   // Emergency saftey Checks
   if (bot::batteryVoltage()<9){
     enableText = "Saftey Check Error: Battery Low -> LOWBATTERY";
-    state = LOWBATTERY;
+    state = SafetyStates::LOWBATTERY;
   }
-
 
   // Run the saftey state machine
   switch(state){
-    case STARTUP:
+    case SafetyStates::STARTUP:
       enableText = "STARTUP -> NORADIO";
-      state = NORADIO;
+      state = SafetyStates::NORADIO;
       break;
 
-    case NORADIO:
+    case SafetyStates::NORADIO:
       if (watchdog < WATCHDOG_TIMEOUT){
         enableText = "NORADIO -> REQUESTDISABLED";
-        state = REQUESTDISABLED;
+        state = SafetyStates::REQUESTDISABLED;
         chassisControlData.data.enable=false;
       }
       else{
@@ -119,10 +118,10 @@ void run_saftey_state_machine(){
       }
       break;
 
-    case REQUESTDISABLED:
+    case SafetyStates::REQUESTDISABLED:
       if (chassisControlData.data.enable==true){
         enableText = "REQUESTDISABLED -> ENABLED";
-        state = ENABLED;
+        state = SafetyStates::ENABLED;
         bot::enable();
       }
       else{
@@ -130,26 +129,26 @@ void run_saftey_state_machine(){
       }
       break;
 
-    case LOWBATTERY:
+    case SafetyStates::LOWBATTERY:
       enableText = "LOWBATTERY";
       break;
 
-    case WATCHDOGERROR:
+    case SafetyStates::WATCHDOGERROR:
       enableText = "WATCHDOGERROR -> REQUESTDISABLED";
-      state = REQUESTDISABLED;
+      state = SafetyStates::REQUESTDISABLED;
       chassisControlData.data.enable=false;
       break;
 
-    case ENABLED:
+    case SafetyStates::ENABLED:
       enableText = "ENABLED";
       if (chassisControlData.data.enable==false){
         enableText = "ENABLED -> REQUESTDISABLED";
-        state = REQUESTDISABLED;
+        state = SafetyStates::REQUESTDISABLED;
       }
 
       if (watchdog > WATCHDOG_TIMEOUT){
         enableText = "ENABLED -> WATCHDOGERROR";
-        state = WATCHDOGERROR;
+        state = SafetyStates::WATCHDOGERROR;
       }
 
       break;
@@ -165,7 +164,7 @@ void loop() {
 
   chassisTelemetryData.data.batteryVoltage = bot::batteryVoltage()*10; // TODO: Battery sensing not currently implimented
   chassisTelemetryData.data.gear = ChassisGear::Low; // TODO: Shifter solenoid not operational in hardware
-  chassisTelemetryData.data.enable = (state == ENABLED);
+  chassisTelemetryData.data.enable = (state == SafetyStates::ENABLED);
   chassisTelemetryData.data.pressure = bot::currentPressure(); //TODO: Hardware detection not installed
   chassisTelemetryData.data.speed = bot::currentSpeed();
 
@@ -174,7 +173,7 @@ void loop() {
 
 
   //If we're disabled, stop actuators and exit loop
-  if(state == ENABLED){
+  if(state == SafetyStates::ENABLED){
     //Pass provided Control data to the hardware
     // int speed = constrain(millis()/10,1500,2000);
     // bot::tankDriveRaw(speed,speed);
@@ -188,7 +187,7 @@ void loop() {
     bot::disable();
   }
 
-  digitalWrite(LED_BUILTIN,(state == ENABLED)?255:0);
+  digitalWrite(LED_BUILTIN,(state == SafetyStates::ENABLED)?255:0);
 
   //wait til next loop
   delay(5);
@@ -202,20 +201,19 @@ void send_telemetry(){
   bool sent=false;
 
   chassisTelemetryData.data.metadata.heartbeat += 1;
-  sent=rf95.send(chassisTelemetryData.buffer, CHASSIS_TELEMETRY_SIZE_BYTES);
+  sent=rf95.send(chassisTelemetryData.buffer, sizeof(ChassisTelemetry));
   // Serial.print(sent ? ">>" : "--" );
   bool done = rf95.waitPacketSent(200);
   // Serial.print(done ? "++" : "--" );
 
   // prevent timing hiccups with switching radio tx/rx modes
   // when robot is operating until better solution located
-  delay(state == ENABLED? 2000 : 200);
+  delay(state == SafetyStates::ENABLED? 2000 : 200);
 }
 
 
-
 void recieve_input(){
-  uint8_t radiobufferlen=CHASSIS_CONTROL_SIZE_BYTES;
+  uint8_t radiobufferlen=0; //Stores length of new packets from radio
 
   if (rf95.available()) {
     // Serial.println();
@@ -223,7 +221,7 @@ void recieve_input(){
     if (rf95.recv(radioBuffer.buffer, &radiobufferlen)) {
       
       if(
-        radiobufferlen==CHASSIS_CONTROL_SIZE_BYTES &&
+        radiobufferlen==sizeof(ChassisControl) &&
         radioBuffer.ccd.metadata.type==PacketType::CHASSIS_CONTROL
       ){
         //valid data; Handle it appropriately

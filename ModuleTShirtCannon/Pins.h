@@ -1,35 +1,30 @@
 #ifndef PINS_H
 #define PINS_H
 
-#include "Arduino.h"
+#include "BoardPins.h"
+/// Provide clear pin names to the various ports on the carrier board
 namespace Pins{
     struct Quad{
         int a;
         int b;
     };
-    Quad quad1{A1,A0};
-    Quad quad2{A3,5};
 
-    struct {
-        int p1=1;
-        int p2=0;
-        int p3=A5;
-        int p4=A4;
-        int p5=6; //Solder Jumpered IO
-        int p6=5; //Solder jumpered IO
-        // int p7=not assigned to board;
-    } pnuematics ;
+    struct DoubleSolenoid{
+      int a;
+      int b;
+    };
 
-    struct {
-        int m1=12;
-        int m2=11;
-        int m3=10;
-        int m4=9;
-        int m5=6; //Solder Jumpered IO
-        int m6=5; //Solder jumpered IO
-    } motors ;
+    int LED = LED_BUILTIN;
 
-    int led = LED_BUILTIN;
+    int BarrelMotor = BoardPins::motors.m2;
+    Quad BarrelEncoder = {BoardPins::quad1.a,BoardPins::quad1.b};
+
+    int ElevationMotor = BoardPins::motors.m1;
+    int ElevationAbsEncoder = BoardPins::quad2.a; //Quad B unused
+
+    int CylinderLock = BoardPins::pnuematics.p1;
+    int FiringPlate = BoardPins::pnuematics.p2;
+    DoubleSolenoid DumpValve = {BoardPins::pnuematics.p3,BoardPins::pnuematics.p4};
 }
 
 #endif
